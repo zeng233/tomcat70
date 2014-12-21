@@ -739,7 +739,7 @@ public class NioEndpoint extends AbstractEndpoint<NioChannel> {
 
     public boolean processSocket(NioChannel socket, SocketStatus status, boolean dispatch) {
         try {
-            KeyAttachment attachment = (KeyAttachment)socket.getAttachment(false);
+            KeyAttachment attachment = (KeyAttachment)socket.getAttachment();
             if (attachment == null) {
                 return false;
             }
@@ -1008,7 +1008,7 @@ public class NioEndpoint extends AbstractEndpoint<NioChannel> {
          */
         @Deprecated
         public void cometInterest(NioChannel socket) {
-            KeyAttachment att = (KeyAttachment)socket.getAttachment(false);
+            KeyAttachment att = (KeyAttachment)socket.getAttachment();
             add(socket,att.getCometOps());
             if ( (att.getCometOps()&OP_CALLBACK) == OP_CALLBACK ) {
                 nextExpiration = 0; //force the check for faster callback
@@ -1078,23 +1078,25 @@ public class NioEndpoint extends AbstractEndpoint<NioChannel> {
             addEvent(r);
         }
         
-        public void cancelledKey(SelectionKey key, SocketStatus status, boolean dispatch) {
+        public KeyAttachment cancelledKey(SelectionKey key, SocketStatus status, boolean dispatch) {
+            KeyAttachment ka = null;
             try {
-                if ( key == null ) return;//nothing to do
-                KeyAttachment ka = (KeyAttachment) key.attachment();
+                if ( key == null ) return null;//nothing to do
+                ka = (KeyAttachment) key.attachment();
                 if (ka != null && ka.isComet() && status != null) {
                     //the comet event takes care of clean up
                     //processSocket(ka.getChannel(), status, dispatch);
                     ka.setComet(false);//to avoid a loop
                     if (status == SocketStatus.TIMEOUT ) {
                         if (processSocket(ka.getChannel(), status, true)) {
-                            return; // don't close on comet timeout
+                            return null; // don't close on comet timeout
                         }
                     } else {
-                        processSocket(ka.getChannel(), status, false); //don't dispatch if the lines below are cancelling the key
+                        // Don't dispatch if the lines below are cancelling the key
+                        processSocket(ka.getChannel(), status, false);
                     }
                 }
-                key.attach(null);
+                ka = (KeyAttachment) key.attach(null);
                 if (ka!=null) handler.release(ka);
                 else handler.release((SocketChannel)key.channel());
                 if (key.isValid()) key.cancel();
@@ -1134,6 +1136,7 @@ public class NioEndpoint extends AbstractEndpoint<NioChannel> {
                 ExceptionUtils.handleThrowable(e);
                 if (log.isDebugEnabled()) log.error("",e);
             }
+            return ka;
         }
         /**
          * The background thread that listens for incoming TCP/IP connections and
@@ -1608,7 +1611,7 @@ public class NioEndpoint extends AbstractEndpoint<NioChannel> {
         protected boolean cometNotify = false;
         protected CountDownLatch readLatch = null;
         protected CountDownLatch writeLatch = null;
-        protected SendfileData sendfileData = null;
+        protected volatile SendfileData sendfileData = null;
         private long writeTimeout = -1;
     }
 
@@ -1739,13 +1742,20 @@ public class NioEndpoint extends AbstractEndpoint<NioChannel> {
                         // Close socket and pool
                         try {
                             if (ka!=null) ka.setComet(false);
-                            socket.getPoller().cancelledKey(key, SocketStatus.ERROR, false);
-                            if (running && !paused) {
-                                nioChannels.offer(socket);
-                            }
-                            socket = null;
-                            if (running && !paused && ka!=null) {
-                                keyCache.offer(ka);
+                            if (socket.getPoller().cancelledKey(key, SocketStatus.ERROR, false) != null) {
+                                // SocketWrapper (attachment) was removed from the
+                                // key - recycle both. This can only happen once
+                                // per attempted closure so it is used to determine
+                                // whether or not to return socket and ka to
+                                // their respective caches. We do NOT want to do
+                                // this more than once - see BZ 57340.
+                                if (running && !paused) {
+                                    nioChannels.offer(socket);
+                                }
+                                socket = null;
+                                if (running && !paused && ka != null) {
+                                    keyCache.offer(ka);
+                                }
                             }
                             ka = null;
                         } catch ( Exception x ) {
@@ -1805,11 +1815,11 @@ public class NioEndpoint extends AbstractEndpoint<NioChannel> {
      */
     public static class SendfileData {
         // File
-        public String fileName;
-        public FileChannel fchannel;
-        public long pos;
-        public long length;
+        public volatile String fileName;
+        public volatile FileChannel fchannel;
+        public volatile long pos;
+        public volatile long length;
         // KeepAlive flag
-        public boolean keepAlive;
+        public volatile boolean keepAlive;
     }
 }

@@ -2163,12 +2163,23 @@ public class StandardContext extends ContainerBase
      */
     @Override
     public void setPath(String path) {
-        if (path == null || (!path.equals("") && !path.startsWith("/"))) {
+        boolean invalid = false;
+        if (path == null || path.equals("/")) {
+            invalid = true;
+            this.path = "";
+        } else if ("".equals(path) || path.startsWith("/")) {
+            this.path = path;
+        } else {
+            invalid = true;
             this.path = "/" + path;
+        }
+        if (this.path.endsWith("/")) {
+            invalid = true;
+            this.path = this.path.substring(0, this.path.length() - 1);
+        }
+        if (invalid) {
             log.warn(sm.getString(
                     "standardContext.pathInvalid", path, this.path));
-        } else {
-            this.path = path;
         }
         encodedPath = urlEncoder.encode(this.path);
         if (getName() == null) {
@@ -5230,11 +5241,12 @@ public class StandardContext extends ContainerBase
                 try {
                     wrapper.load();
                 } catch (ServletException e) {
-                    getLogger().error(sm.getString("standardWrapper.loadException",
-                                      getName()), StandardWrapper.getRootCause(e));
+                    getLogger().error(sm.getString("standardContext.loadOnStartup.loadException",
+                          getName(), wrapper.getName()), StandardWrapper.getRootCause(e));
                     // NOTE: load errors (including a servlet that throws
-                    // UnavailableException from tht init() method) are NOT
-                    // fatal to application startup, excepted if failDeploymentIfServletLoadedOnStartupFails is specified
+                    // UnavailableException from the init() method) are NOT
+                    // fatal to application startup
+                    // unless failCtxIfServletStartFails="true" is specified
                     if(getComputedFailCtxIfServletStartFails()) {
                         return false;
                     }
